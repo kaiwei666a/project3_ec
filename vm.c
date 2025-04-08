@@ -197,21 +197,63 @@ inituvm(pde_t *pgdir, char *init, uint sz)
 int
 loaduvm(pde_t *pgdir, char *addr, struct inode *ip, uint offset, uint sz)
 {
+//   uint i, pa, n;
+//   pte_t *pte;
+
+//   if((uint) addr % PGSIZE != 0)
+//     panic("loaduvm: addr must be page aligned");
+//   for(i = 0; i < sz; i += PGSIZE){
+//     if((pte = walkpgdir(pgdir, addr+i, 0)) == 0)
+//       panic("loaduvm: address should exist");
+//     pa = PTE_ADDR(*pte);
+//     if(sz - i < PGSIZE)
+//       n = sz - i;
+//     else
+//       n = PGSIZE;
+//     if(readi(ip, P2V(pa), offset+i, n) != n)
+//       return -1;
+//   }
+//   return 0;
+// }
   uint i, pa, n;
   pte_t *pte;
 
-  if((uint) addr % PGSIZE != 0)
-    panic("loaduvm: addr must be page aligned");
-  for(i = 0; i < sz; i += PGSIZE){
-    if((pte = walkpgdir(pgdir, addr+i, 0)) == 0)
+  uint taddr = (uint) addr;
+  uint naddr = PGROUNDDOWN(taddr);
+  uint pgoff = taddr - naddr;
+  char *tt = (char*)naddr;
+
+  // Filling the page with 0s starting a naddr.
+  if((pte = walkpgdir(pgdir, tt, 1)) == 0){
+    panic("loaduvm: address should exist");
+  }
+  pa = PTE_ADDR(*pte);
+
+  // Getting the amount of bytes in the first (partial)page
+  if(sz < PGSIZE-pgoff)
+    n = sz;
+  else
+    n = PGSIZE-pgoff;
+
+  // Loading the first (partial)page (set of bytes)
+  // in the address beyond base address + offset
+  if(readi(ip, P2V(pa + pgoff), offset, n) != n)
+    return -1;
+  offset += n;
+  sz -= n;
+
+  for(i = PGSIZE; sz > 0; i += PGSIZE){
+    if((pte = walkpgdir(pgdir, addr+i, 1)) == 0)
       panic("loaduvm: address should exist");
     pa = PTE_ADDR(*pte);
-    if(sz - i < PGSIZE)
-      n = sz - i;
+    if(sz < PGSIZE)
+      n = sz;
     else
       n = PGSIZE;
-    if(readi(ip, P2V(pa), offset+i, n) != n)
+    if(readi(ip, P2V(pa), offset, n) != n)
       return -1;
+    sz -= n;
+    offset += n;
   }
   return 0;
 }
@@ -322,7 +364,7 @@ copyuvm(pde_t *pgdir, uint sz)
 
   if((d = setupkvm()) == 0)
     return 0;
-  for(i = 0; i < sz; i += PGSIZE){
+  for(i = PGSIZE; i < sz; i += PGSIZE){
     if((pte = walkpgdir(pgdir, (void *) i, 0)) == 0)
       panic("copyuvm: pte should exist");
     if(!(*pte & PTE_P))

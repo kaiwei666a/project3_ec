@@ -6,6 +6,7 @@
 #include "x86.h"
 #include "proc.h"
 #include "spinlock.h"
+#include "date.h"
 
 struct {
   struct spinlock lock;
@@ -531,4 +532,31 @@ procdump(void)
     }
     cprintf("\n");
   }
+}
+
+#define A 1664525
+#define C 1013904223
+#define M 40969837
+
+unsigned int seed = 12345; 
+
+// Generate a pseudo-random number between 0 and M-1
+unsigned int rand()
+{
+  seed = (A * seed + C) % M;
+  return seed;
+}
+
+int random(void)
+{
+  struct rtcdate rtime;
+  // Get the current system time
+  cmostime(&rtime);
+  seed += (rtime.hour + 60 * rtime.minute + 3600 * rtime.second) % M;
+
+  int rand_num;
+  // Generate a random number between 0 and M-1
+  for (int i = 0; i < 10; i++)
+    rand_num = rand() % 4000;
+  return (rand_num);
 }
