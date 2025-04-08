@@ -80,6 +80,14 @@ trap(struct trapframe *tf)
 
     case T_PGFLT: ;
       uint f = rcr2();
+      if(f < PGSIZE){
+        cprintf("pid %d %s: trap %d err %d on cpu %d "
+                "eip 0x%x addr 0x%x--kill proc\n",
+                myproc()->pid, myproc()->name, tf->trapno,
+                tf->err, cpuid(), tf->eip, f);
+        myproc()->killed = 1;
+        break;
+      }
       if (f >KERNBASE-1){
           cprintf("from trap access > KERNBASE");
           exit();
