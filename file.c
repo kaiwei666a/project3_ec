@@ -9,6 +9,8 @@
 #include "spinlock.h"
 #include "sleeplock.h"
 #include "file.h"
+#include "stat.h"
+
 
 struct devsw devsw[NDEV];
 struct {
@@ -154,4 +156,25 @@ filewrite(struct file *f, char *addr, int n)
   }
   panic("filewrite");
 }
+
+
+// int
+// create_symlink(char *target, char *path)
+// {
+//   struct inode *ip;
+
+//   begin_op();
+
+//   if ((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+//     end_op();
+//     return -1;
+//   }
+
+//   writei(ip, target, 0, strlen(target));
+//   iupdate(ip);
+//   iunlockput(ip);
+//   end_op();
+
+//   return 0;
+// }
 

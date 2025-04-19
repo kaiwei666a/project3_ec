@@ -282,6 +282,57 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
+// int
+// sys_open(void)
+// {
+//   char *path;
+//   int fd, omode;
+//   struct file *f;
+//   struct inode *ip;
+
+//   if(argstr(0, &path) < 0 || argint(1, &omode) < 0)
+//     return -1;
+
+//   begin_op();
+
+//   if(omode & O_CREATE){
+//     ip = create(path, T_FILE, 0, 0);
+//     if(ip == 0){
+//       end_op();
+//       return -1;
+//     }
+//   } else {
+//     if((ip = namei(path)) == 0){
+//       end_op();
+//       return -1;
+//     }
+//     ilock(ip);
+//     if(ip->type == T_DIR && omode != O_RDONLY){
+//       iunlockput(ip);
+//       end_op();
+//       return -1;
+//     }
+//   }
+
+//   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+//     if(f)
+//       fileclose(f);
+//     iunlockput(ip);
+//     end_op();
+//     return -1;
+//   }
+//   iunlock(ip);
+//   end_op();
+
+//   f->type = FD_INODE;
+//   f->ip = ip;
+//   f->off = 0;
+//   f->readable = !(omode & O_WRONLY);
+//   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+//   return fd;
+// }
+
+
 int
 sys_open(void)
 {
@@ -292,6 +343,9 @@ sys_open(void)
 
   if(argstr(0, &path) < 0 || argint(1, &omode) < 0)
     return -1;
+
+  /* ★① 把 O_NOFOLLOW 传给 namex() 用：放进 proc->nofollow */
+  myproc()->nofollow = (omode & O_NOFOLLOW) ? 1 : 0;
 
   begin_op();
 
@@ -324,6 +378,8 @@ sys_open(void)
   iunlock(ip);
   end_op();
 
+  myproc()->nofollow = 0;
+
   f->type = FD_INODE;
   f->ip = ip;
   f->off = 0;
@@ -331,6 +387,7 @@ sys_open(void)
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
   return fd;
 }
+
 
 int
 sys_mkdir(void)
@@ -441,4 +498,46 @@ sys_pipe(void)
   fd[0] = fd0;
   fd[1] = fd1;
   return 0;
+}
+
+
+int
+sys_lseek(void)
+{
+  int fd, offset;
+  struct file *f;
+
+  if (argint(0, &fd) < 0 || argint(1, &offset) < 0)
+    return -1;
+  if ((f = myproc()->ofile[fd]) == 0)
+    return -1;
+
+  int newoff = f->off + offset;
+  if (newoff < 0)
+    return -1;
+
+  if (newoff > f->ip->size && f->writable) {
+    char zero = 0;
+    while (f->ip->size < newoff) {
+      if (filewrite(f, &zero, 1) < 1)
+        return -1;
+    }
+  }
+
+  f->off = newoff;
+  return newoff;
+}
+
+// Declare the function implemented in fs.c
+int create_symlink(char *target, char *path);
+
+
+int
+sys_symlink(void)
+{
+  char *target, *path;
+  if (argstr(0, &target) < 0 || argstr(1, &path) < 0)
+    return -1;
+
+  return create_symlink(target, path);  
 }

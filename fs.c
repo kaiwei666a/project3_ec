@@ -20,9 +20,10 @@
 #include "fs.h"
 #include "buf.h"
 #include "file.h"
+#include "fcntl.h"
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
-static void itrunc(struct inode*);
+#define MAXPATH 128  // Maximum path length
 // there should be one superblock per disk device, but we run with
 // only one device
 struct superblock sb; 
@@ -660,7 +661,37 @@ struct inode*
 namei(char *path)
 {
   char name[DIRSIZ];
-  return namex(path, 0, name);
+  struct inode *ip;
+  int depth = 0;
+  const int MAX_DEPTH = 10;  // Maximum symlink depth
+
+  if((ip = namex(path, 0, name)) == 0)
+    return 0;
+
+  // If O_NOFOLLOW is set, don't follow symlinks
+  if(myproc()->nofollow)
+    return ip;
+
+  // Follow symlinks recursively
+  while(ip->type == T_SYMLINK && depth < MAX_DEPTH) {
+    char target[MAXPATH];
+    if(readi(ip, target, 0, MAXPATH) < 0) {
+      iunlockput(ip);
+      return 0;
+    }
+    iunlockput(ip);
+    
+    if((ip = namex(target, 0, name)) == 0)
+      return 0;
+    depth++;
+  }
+
+  if(depth >= MAX_DEPTH) {
+    iunlockput(ip);
+    return 0;
+  }
+
+  return ip;
 }
 
 struct inode*
@@ -668,3 +699,77 @@ nameiparent(char *path, char *name)
 {
   return namex(path, 1, name);
 }
+
+static struct inode*
+create(char *path, short type, short major, short minor)
+{
+  struct inode *ip, *dp;
+  char name[DIRSIZ];
+
+  // 获取父目录 inode，解析最后一级名字
+  if((dp = nameiparent(path, name)) == 0)
+    return 0;
+  ilock(dp);
+
+  // 如果已经存在该文件，则根据类型返回（仅普通文件可以重复）
+  if((ip = dirlookup(dp, name, 0)) != 0){
+    iunlockput(dp);
+    ilock(ip);
+    if(type == T_FILE && ip->type == T_FILE)
+      return ip;
+    iunlockput(ip);
+    return 0;
+  }
+
+  // 分配 inode
+  if((ip = ialloc(dp->dev, type)) == 0)
+    panic("create: ialloc");
+
+  ilock(ip);
+  ip->major = major;
+  ip->minor = minor;
+  ip->nlink = 1;
+  iupdate(ip);
+
+  // 如果是目录，添加 . 和 .. 链接
+  if(type == T_DIR){
+    dp->nlink++;  // 父目录增加 nlink 计数（用于 ..）
+    iupdate(dp);
+    if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
+      panic("create: dirlink dots");
+  }
+
+  // 把新文件添加到父目录项中
+  if(dirlink(dp, name, ip->inum) < 0)
+    panic("create: dirlink");
+
+  iunlockput(dp);  // 释放父目录
+
+  return ip;
+}
+
+int
+create_symlink(char *target, char *path)
+{
+  struct inode *ip;
+
+  begin_op();
+  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+    end_op();
+    return -1;
+  }
+
+  // Write the target path to the symlink's data block
+  if(writei(ip, target, 0, strlen(target)) != strlen(target)){
+    iunlockput(ip);
+    end_op();
+    return -1;
+  }
+
+  ip->size = strlen(target);
+  iupdate(ip);
+  iunlockput(ip);
+  end_op();
+  return 0;
+}
+
