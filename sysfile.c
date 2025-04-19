@@ -16,6 +16,8 @@
 #include "file.h"
 #include "fcntl.h"
 
+#define MAXPATH 128  // Maximum path length
+
 // Fetch the nth word-sized system call argument as a file descriptor
 // and return both the descriptor and the corresponding struct file.
 static int
@@ -282,57 +284,6 @@ create(char *path, short type, short major, short minor)
   return ip;
 }
 
-// int
-// sys_open(void)
-// {
-//   char *path;
-//   int fd, omode;
-//   struct file *f;
-//   struct inode *ip;
-
-//   if(argstr(0, &path) < 0 || argint(1, &omode) < 0)
-//     return -1;
-
-//   begin_op();
-
-//   if(omode & O_CREATE){
-//     ip = create(path, T_FILE, 0, 0);
-//     if(ip == 0){
-//       end_op();
-//       return -1;
-//     }
-//   } else {
-//     if((ip = namei(path)) == 0){
-//       end_op();
-//       return -1;
-//     }
-//     ilock(ip);
-//     if(ip->type == T_DIR && omode != O_RDONLY){
-//       iunlockput(ip);
-//       end_op();
-//       return -1;
-//     }
-//   }
-
-//   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
-//     if(f)
-//       fileclose(f);
-//     iunlockput(ip);
-//     end_op();
-//     return -1;
-//   }
-//   iunlock(ip);
-//   end_op();
-
-//   f->type = FD_INODE;
-//   f->ip = ip;
-//   f->off = 0;
-//   f->readable = !(omode & O_WRONLY);
-//   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
-//   return fd;
-// }
-
-
 int
 sys_open(void)
 {
@@ -344,9 +295,6 @@ sys_open(void)
   if(argstr(0, &path) < 0 || argint(1, &omode) < 0)
     return -1;
 
-  /* ★① 把 O_NOFOLLOW 传给 namex() 用：放进 proc->nofollow */
-  myproc()->nofollow = (omode & O_NOFOLLOW) ? 1 : 0;
-
   begin_op();
 
   if(omode & O_CREATE){
@@ -356,16 +304,50 @@ sys_open(void)
       return -1;
     }
   } else {
+    // Handle symlinks
+    int depth = 0;
+    const int MAX_DEPTH = 10;
+    
     if((ip = namei(path)) == 0){
       end_op();
       return -1;
     }
-    ilock(ip);
-    if(ip->type == T_DIR && omode != O_RDONLY){
-      iunlockput(ip);
-      end_op();
-      return -1;
+    ilock(ip);  // Lock the inode after namei
+
+    // If O_NOFOLLOW is set, don't follow symlinks
+    if(!(omode & O_NOFOLLOW)) {
+      // Follow symlinks recursively
+      while(ip->type == T_SYMLINK && depth < MAX_DEPTH) {
+        char target[MAXPATH];
+        memset(target, 0, MAXPATH);
+        
+        if(readi(ip, target, 0, MAXPATH-1) < 0) {
+          iunlockput(ip);
+          end_op();
+          return -1;
+        }
+        iunlockput(ip);  // Release current inode before getting next one
+        
+        if((ip = namei(target)) == 0) {
+          end_op();
+          return -1;
+        }
+        ilock(ip);  // Lock the new inode
+        depth++;
+      }
+
+      if(depth >= MAX_DEPTH) {
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
     }
+  }
+
+  if(ip->type == T_DIR && omode != O_RDONLY){
+    iunlockput(ip);
+    end_op();
+    return -1;
   }
 
   if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
@@ -375,10 +357,8 @@ sys_open(void)
     end_op();
     return -1;
   }
-  iunlock(ip);
+  iunlock(ip);  // Keep the inode locked until we're done with it
   end_op();
-
-  myproc()->nofollow = 0;
 
   f->type = FD_INODE;
   f->ip = ip;
@@ -387,7 +367,6 @@ sys_open(void)
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
   return fd;
 }
-
 
 int
 sys_mkdir(void)

@@ -1,14 +1,3 @@
-// File system implementation.  Five layers:
-//   + Blocks: allocator for raw disk blocks.
-//   + Log: crash recovery for multi-step updates.
-//   + Files: inode allocator, reading, writing, metadata.
-//   + Directories: inode with special contents (list of other inodes!)
-//   + Names: paths like /usr/rtm/xv6/fs.c for convenient naming.
-//
-// This file contains the low-level file system manipulation
-// routines.  The (higher-level) system call implementations
-// are in sysfile.c.
-
 #include "types.h"
 #include "defs.h"
 #include "param.h"
@@ -20,10 +9,11 @@
 #include "fs.h"
 #include "buf.h"
 #include "file.h"
-#include "fcntl.h"
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
-#define MAXPATH 128  // Maximum path length
+static void itrunc(struct inode*);
+static struct inode* create(char*, short, short, short);
+
 // there should be one superblock per disk device, but we run with
 // only one device
 struct superblock sb; 
@@ -661,37 +651,7 @@ struct inode*
 namei(char *path)
 {
   char name[DIRSIZ];
-  struct inode *ip;
-  int depth = 0;
-  const int MAX_DEPTH = 10;  // Maximum symlink depth
-
-  if((ip = namex(path, 0, name)) == 0)
-    return 0;
-
-  // If O_NOFOLLOW is set, don't follow symlinks
-  if(myproc()->nofollow)
-    return ip;
-
-  // Follow symlinks recursively
-  while(ip->type == T_SYMLINK && depth < MAX_DEPTH) {
-    char target[MAXPATH];
-    if(readi(ip, target, 0, MAXPATH) < 0) {
-      iunlockput(ip);
-      return 0;
-    }
-    iunlockput(ip);
-    
-    if((ip = namex(target, 0, name)) == 0)
-      return 0;
-    depth++;
-  }
-
-  if(depth >= MAX_DEPTH) {
-    iunlockput(ip);
-    return 0;
-  }
-
-  return ip;
+  return namex(path, 0, name);
 }
 
 struct inode*
@@ -706,12 +666,10 @@ create(char *path, short type, short major, short minor)
   struct inode *ip, *dp;
   char name[DIRSIZ];
 
-  // 获取父目录 inode，解析最后一级名字
   if((dp = nameiparent(path, name)) == 0)
     return 0;
   ilock(dp);
 
-  // 如果已经存在该文件，则根据类型返回（仅普通文件可以重复）
   if((ip = dirlookup(dp, name, 0)) != 0){
     iunlockput(dp);
     ilock(ip);
@@ -721,7 +679,6 @@ create(char *path, short type, short major, short minor)
     return 0;
   }
 
-  // 分配 inode
   if((ip = ialloc(dp->dev, type)) == 0)
     panic("create: ialloc");
 
@@ -731,19 +688,18 @@ create(char *path, short type, short major, short minor)
   ip->nlink = 1;
   iupdate(ip);
 
-  // 如果是目录，添加 . 和 .. 链接
-  if(type == T_DIR){
-    dp->nlink++;  // 父目录增加 nlink 计数（用于 ..）
+  if(type == T_DIR){  // Create . and .. entries.
+    dp->nlink++;  // for ".."
     iupdate(dp);
+    // No ip->nlink++ for ".": avoid cyclic ref count.
     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
-      panic("create: dirlink dots");
+      panic("create dots");
   }
 
-  // 把新文件添加到父目录项中
   if(dirlink(dp, name, ip->inum) < 0)
     panic("create: dirlink");
 
-  iunlockput(dp);  // 释放父目录
+  iunlockput(dp);
 
   return ip;
 }
@@ -759,7 +715,7 @@ create_symlink(char *target, char *path)
     return -1;
   }
 
-  // Write the target path to the symlink's data block
+  // 把 target 路径写入 symlink 的数据块
   if(writei(ip, target, 0, strlen(target)) != strlen(target)){
     iunlockput(ip);
     end_op();
@@ -767,7 +723,7 @@ create_symlink(char *target, char *path)
   }
 
   ip->size = strlen(target);
-  iupdate(ip);
+  iupdate(ip);          // 持久化
   iunlockput(ip);
   end_op();
   return 0;
