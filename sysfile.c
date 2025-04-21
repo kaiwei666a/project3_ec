@@ -304,43 +304,43 @@ sys_open(void)
       return -1;
     }
   } else {
-    // Handle symlinks
     int depth = 0;
     const int MAX_DEPTH = 10;
-    
+
     if((ip = namei(path)) == 0){
       end_op();
       return -1;
     }
-    ilock(ip);  // Lock the inode after namei
+    ilock(ip);
 
-    // If O_NOFOLLOW is set, don't follow symlinks
-    if(!(omode & O_NOFOLLOW)) {
-      // Follow symlinks recursively
-      while(ip->type == T_SYMLINK && depth < MAX_DEPTH) {
-        char target[MAXPATH];
-        memset(target, 0, MAXPATH);
-        
-        if(readi(ip, target, 0, MAXPATH-1) < 0) {
-          iunlockput(ip);
-          end_op();
-          return -1;
-        }
-        iunlockput(ip);  // Release current inode before getting next one
-        
-        if((ip = namei(target)) == 0) {
-          end_op();
-          return -1;
-        }
-        ilock(ip);  // Lock the new inode
-        depth++;
-      }
+    if((omode & O_NOFOLLOW) && ip->type == T_SYMLINK){
+      iunlockput(ip);
+      end_op();
+      return -1;
+    }
 
-      if(depth >= MAX_DEPTH) {
+    while(!(omode & O_NOFOLLOW) && ip->type == T_SYMLINK && depth < MAX_DEPTH){
+      char target[MAXPATH];
+      memset(target, 0, MAXPATH);
+      if(readi(ip, target, 0, MAXPATH-1) < 0){
         iunlockput(ip);
         end_op();
         return -1;
       }
+
+      iunlockput(ip); // unlock and put the old inode before namei
+      if((ip = namei(target)) == 0){
+        end_op();
+        return -1;
+      }
+      ilock(ip);
+      depth++;
+    }
+
+    if(depth >= MAX_DEPTH){
+      iunlockput(ip);
+      end_op();
+      return -1;
     }
   }
 
@@ -357,7 +357,8 @@ sys_open(void)
     end_op();
     return -1;
   }
-  iunlock(ip);  // Keep the inode locked until we're done with it
+
+  iunlock(ip);
   end_op();
 
   f->type = FD_INODE;
@@ -365,8 +366,10 @@ sys_open(void)
   f->off = 0;
   f->readable = !(omode & O_WRONLY);
   f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+
   return fd;
 }
+
 
 int
 sys_mkdir(void)
@@ -519,4 +522,23 @@ sys_symlink(void)
     return -1;
 
   return create_symlink(target, path);  
+}
+
+int
+sys_lstat(void)
+{
+  char *path;
+  struct stat *st;
+
+  if(argstr(0, &path) < 0 || argptr(1, (void*)&st, sizeof(*st)) < 0)
+    return -1;
+
+  struct inode *ip;
+  if((ip = namei(path)) == 0)
+    return -1;
+
+  ilock(ip);
+  stati(ip, st);
+  iunlockput(ip);
+  return 0;
 }

@@ -105,6 +105,7 @@ extern int sys_write(void);
 extern int sys_uptime(void);
 extern int sys_lseek(void);
 extern int sys_symlink(void);
+extern int sys_lstat(void);
 
 static int (*syscalls[])(void) = {
 [SYS_fork]    sys_fork,
@@ -128,9 +129,9 @@ static int (*syscalls[])(void) = {
 [SYS_link]    sys_link,
 [SYS_mkdir]   sys_mkdir,
 [SYS_close]   sys_close,
-[SYS_lseek] sys_lseek,
+[SYS_lseek]   sys_lseek,
 [SYS_symlink] sys_symlink,
-
+[SYS_lstat]   sys_lstat,
 };
 
 void

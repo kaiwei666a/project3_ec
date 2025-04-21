@@ -183,6 +183,7 @@ UPROGS=\
 	_zombie\
 	_lseek\
 	_symlinktest\
+	_checklink\
 
 fs.img: mkfs README $(UPROGS)
 	./mkfs fs.img README $(UPROGS)

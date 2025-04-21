@@ -12,7 +12,7 @@
 
 #define min(a, b) ((a) < (b) ? (a) : (b))
 static void itrunc(struct inode*);
-static struct inode* create(char*, short, short, short);
+// static struct inode* create(char*, short, short, short);
 
 // there should be one superblock per disk device, but we run with
 // only one device
@@ -660,72 +660,216 @@ nameiparent(char *path, char *name)
   return namex(path, 1, name);
 }
 
+// static struct inode*
+// create(char *path, short type, short major, short minor)
+// {
+//   struct inode *ip, *dp;
+//   char name[DIRSIZ];
+
+//   if((dp = nameiparent(path, name)) == 0)
+//     return 0;
+//   ilock(dp);
+
+//   if((ip = dirlookup(dp, name, 0)) != 0){
+//     iunlockput(dp);
+//     ilock(ip);
+//     if(type == T_FILE && ip->type == T_FILE)
+//       return ip;
+//     iunlockput(ip);
+//     return 0;
+//   }
+
+//   if((ip = ialloc(dp->dev, type)) == 0)
+//     panic("create: ialloc");
+
+//   ilock(ip);
+//   ip->major = major;
+//   ip->minor = minor;
+//   ip->nlink = 1;
+//   iupdate(ip);
+
+//   if(type == T_DIR){  // Create . and .. entries.
+//     dp->nlink++;  // for ".."
+//     iupdate(dp);
+//     // No ip->nlink++ for ".": avoid cyclic ref count.
+//     if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
+//       panic("create dots");
+//   }
+
+//   if(dirlink(dp, name, ip->inum) < 0)
+//     panic("create: dirlink");
+
+//   iunlockput(dp);
+
+//   return ip;
+// }
+
+
+
+// static struct inode*
+// create(char *path, short type, int major, int minor)
+// {
+//   struct inode *ip, *dp;
+//   char name[DIRSIZ];
+
+//   if((dp = nameiparent(path, name)) == 0)
+//     return 0;
+//   ilock(dp);
+
+//   // if((ip = dirlookup(dp, name, 0)) != 0){
+//   //   iunlockput(dp);
+//   //   ilock(ip);
+//   //   if(type == T_FILE && ip->type == T_FILE)
+//   //     return ip;
+//   //   iunlockput(ip);
+//   //   return 0;
+//   // }
+
+//   if((ip = dirlookup(dp, name, 0)) != 0){
+//     ilock(ip);
+//     if(type == T_FILE && ip->type == T_FILE){
+//       iunlockput(dp);
+//       return ip;
+//     }
+
+//     iunlockput(ip);
+//     iunlockput(dp);
+//     return 0;
+//   }
+  
+
+//   if((ip = ialloc(dp->dev, type)) == 0)
+//     panic("create: ialloc");
+
+//   ilock(ip);
+//   ip->major = major;
+//   ip->minor = minor;
+//   ip->nlink = 1;
+//   ip->type = type;  
+//   iupdate(ip);
+
+//   if(dirlink(dp, name, ip->inum) < 0)
+//     panic("create: dirlink");
+
+//   iunlockput(dp);
+
+//   return ip;
+// }
+
+
+// int
+// create_symlink(char *target, char *path)
+// {
+//   struct inode *ip;
+
+//   begin_op();
+//   if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+//     end_op();
+//     return -1;
+//   }
+
+//   if(writei(ip, target, 0, strlen(target)) != strlen(target)){
+//     iunlockput(ip);
+//     end_op();
+//     return -1;
+//   }
+
+//   ip->size = strlen(target);
+//   iupdate(ip);          // 持久化
+//   iunlockput(ip);
+//   end_op();
+//   return 0;
+// }
+
+
+
+
+/****************************************************************************
+ *  fs.c  —  修订后的 create() 和 create_symlink()
+ ****************************************************************************/
+
+// -------------------------------------------------------------------------
+// create(): 分配并初始化一个新 inode，并在父目录中添加目录项。
+// 对 T_SYMLINK 不做特殊限制；真正特殊逻辑由上层系统调用决定。
+// -------------------------------------------------------------------------
 static struct inode*
-create(char *path, short type, short major, short minor)
+create(char *path, short type, int major, int minor)
 {
   struct inode *ip, *dp;
   char name[DIRSIZ];
 
-  if((dp = nameiparent(path, name)) == 0)
+  // 找到父目录 inode
+  if ((dp = nameiparent(path, name)) == 0)
     return 0;
   ilock(dp);
 
-  if((ip = dirlookup(dp, name, 0)) != 0){
-    iunlockput(dp);
+  // 如果同名文件已存在：
+  if ((ip = dirlookup(dp, name, 0)) != 0) {
+    // ① 若请求创建普通文件且目标也是普通文件，则直接返回现 inode
+    //    （沿用 xv6 原语义，支持 O_TRUNC 覆盖场景）
     ilock(ip);
-    if(type == T_FILE && ip->type == T_FILE)
-      return ip;
+    if (type == T_FILE && ip->type == T_FILE) {
+      iunlockput(dp);
+      return ip;               // 仍保持 ip 锁定状态给上层 open()
+    }
+    // ② 其它情况 —— 创建失败，返回 NULL
     iunlockput(ip);
+    iunlockput(dp);
     return 0;
   }
 
-  if((ip = ialloc(dp->dev, type)) == 0)
+  // 分配一个新 inode，类型 = 传入 type
+  if ((ip = ialloc(dp->dev, type)) == 0)
     panic("create: ialloc");
 
+  // 初始化 inode
   ilock(ip);
   ip->major = major;
   ip->minor = minor;
   ip->nlink = 1;
+  ip->type  = type;          // *** 关键：保留调用者指定的类型 ***
   iupdate(ip);
 
-  if(type == T_DIR){  // Create . and .. entries.
-    dp->nlink++;  // for ".."
-    iupdate(dp);
-    // No ip->nlink++ for ".": avoid cyclic ref count.
-    if(dirlink(ip, ".", ip->inum) < 0 || dirlink(ip, "..", dp->inum) < 0)
-      panic("create dots");
-  }
-
-  if(dirlink(dp, name, ip->inum) < 0)
+  // 将 <name, inum> 写入父目录
+  if (dirlink(dp, name, ip->inum) < 0)
     panic("create: dirlink");
 
+  // 释放父目录
   iunlockput(dp);
 
+  // 返回新 inode（保持锁定）— 让上层 open()/symlink() 再决定写数据
   return ip;
 }
 
+// -------------------------------------------------------------------------
+// create_symlink():  系统调用帮助函数
+//    在 path 创建一个符号链接，指向 target 字符串
+// -------------------------------------------------------------------------
 int
 create_symlink(char *target, char *path)
 {
   struct inode *ip;
 
   begin_op();
-  if((ip = create(path, T_SYMLINK, 0, 0)) == 0){
+
+  // 1. 尝试创建新 inode，类型 T_SYMLINK
+  if ((ip = create(path, T_SYMLINK, 0, 0)) == 0) {
+    // path 已存在或分配失败
     end_op();
     return -1;
   }
 
-  // 把 target 路径写入 symlink 的数据块
-  if(writei(ip, target, 0, strlen(target)) != strlen(target)){
+  // 2. 把目标路径写入数据块
+  if (writei(ip, target, 0, strlen(target)) != strlen(target)) {
     iunlockput(ip);
     end_op();
     return -1;
   }
-
   ip->size = strlen(target);
-  iupdate(ip);          // 持久化
+  iupdate(ip);                // 持久化更新
+
+  // 3. 解锁并放回
   iunlockput(ip);
   end_op();
   return 0;
 }
-
