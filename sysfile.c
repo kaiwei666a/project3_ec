@@ -314,9 +314,21 @@ sys_open(void)
     ilock(ip);
 
     if((omode & O_NOFOLLOW) && ip->type == T_SYMLINK){
-      iunlockput(ip);
+      if((f = filealloc()) == 0 || (fd = fdalloc(f)) < 0){
+        if(f)
+          fileclose(f);
+        iunlockput(ip);
+        end_op();
+        return -1;
+      }
+      f->type = FD_INODE;
+      f->ip = ip;
+      f->off = 0;
+      f->readable = !(omode & O_WRONLY);
+      f->writable = (omode & O_WRONLY) || (omode & O_RDWR);
+      iunlock(ip);
       end_op();
-      return -1;
+      return fd;
     }
 
     while(!(omode & O_NOFOLLOW) && ip->type == T_SYMLINK && depth < MAX_DEPTH){
